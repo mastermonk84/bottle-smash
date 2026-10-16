@@ -1,0 +1,477 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>Bottle Smash</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #1a1020; overflow: hidden; font-family: -apple-system, system-ui, sans-serif; }
+  canvas { display: block; touch-action: none; }
+  #hud { position: fixed; top: 12px; left: 16px; color: #fff; font-weight: 700; font-size: 18px; text-shadow: 0 2px 4px #000a; pointer-events: none; }
+  #hint { position: fixed; bottom: 10px; left: 0; right: 0; text-align: center; color: #fffc; font-size: 13px; text-shadow: 0 1px 3px #000; pointer-events: none; }
+  #panel { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: #0008; }
+  #panel.hidden { display: none; }
+  .card { background: #fff8ec; border-radius: 16px; padding: 28px 40px; text-align: center; box-shadow: 0 10px 40px #000a; max-width: 420px; }
+  .card h1 { margin: 0 0 8px; color: #6b1d2a; }
+  .card p { color: #444; margin: 8px 0 18px; line-height: 1.4; }
+  .card button { font-size: 18px; font-weight: 700; padding: 10px 26px; border: 0; border-radius: 10px; background: #b8323f; color: #fff; cursor: pointer; margin: 4px; }
+  .card button.alt { background: #777; }
+  #rotate { display: none; position: fixed; inset: 0; background: #1a1020; color: #fff; font-size: 22px; font-weight: 700; align-items: center; justify-content: center; text-align: center; z-index: 10; }
+  @media (orientation: portrait) and (max-width: 900px) { #rotate { display: flex; } }
+  @media (max-height: 500px) { #hud { font-size: 14px; } #hint { font-size: 11px; } }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hud"></div>
+<div id="hint">Drag the bottle back and release. Champagne: tap mid-flight to pop the cork. R restarts the level.</div>
+<div id="rotate">📱↻<br>Turn your phone sideways</div>
+<div id="panel"><div class="card" id="card"></div></div>
+
+<script src="https://cdn.jsdelivr.net/npm/matter-js@0.19.0/build/matter.min.js"></script>
+<script>
+if (!window.Matter) {
+  document.getElementById('card').innerHTML = '<h1>Offline?</h1><p>Could not load the physics engine (matter.js) from the CDN. Connect to the internet and reload.</p>';
+  throw new Error('matter.js missing');
+}
+const { Engine, Bodies, Body, Events, Composite } = Matter;
+
+// ---------- constants ----------
+const W = 1600, H = 800, GROUND = 720, STEP = 1000 / 60;
+const ANCHOR = { x: 210, y: 560 }, MAXPULL = 120, POWER = 0.17;
+const G = 0.001 * STEP * STEP; // gravity per step, matches matter.js defaults
+
+const MATS = {
+  wood:  { hp: 90,  density: 0.0012, fill: '#c8893f', edge: '#7a4a1c', score: 500, shard: ['#c8893f', '#8a5a2b'] },
+  glass: { hp: 35,  density: 0.001,  fill: 'rgba(170,220,255,0.55)', edge: '#6fa8d6', score: 300, shard: ['#cdeeff', '#8fc6ee'] },
+  stone: { hp: 260, density: 0.003,  fill: '#9a9aa3', edge: '#55555c', score: 800, shard: ['#9a9aa3', '#6d6d75'] },
+};
+const BOTTLES = {
+  beer:      { density: 0.004, power: 1.0, glass: '#8a4b12', label: '#f4ead2', cap: '#d9b23a', shoulder: -6,  neck: 7 },
+  wine:      { density: 0.008, power: 1.8, glass: '#3d0d18', label: '#efe3c4', cap: '#8e1c2c', shoulder: -12, neck: 7 },
+  champagne: { density: 0.005, power: 1.2, glass: '#1f3d22', label: '#1b1b1b', cap: '#e1bd4a', shoulder: 0,   neck: 8 },
+};
+
+const LEVELS = [
+  { bottles: ['beer', 'beer', 'wine'], build() {
+      block(1100, 660, 20, 120, 'wood'); block(1240, 660, 20, 120, 'wood'); block(1170, 590, 180, 20, 'wood');
+      lemon(1170, 702, 18); lemon(1170, 561, 18);
+      block(1420, 680, 40, 80, 'glass'); lemon(1420, 621, 18);
+  }},
+  { bottles: ['beer', 'wine', 'champagne', 'beer'], build() {
+      block(1050, 700, 180, 40, 'stone');
+      block(985, 630, 20, 100, 'wood'); block(1115, 630, 20, 100, 'wood');
+      block(1050, 570, 170, 20, 'glass');
+      lemon(1050, 661, 18); lemon(1050, 541, 18);
+      block(1300, 660, 20, 120, 'glass'); block(1400, 660, 20, 120, 'glass');
+      block(1350, 590, 150, 20, 'wood');
+      block(1320, 530, 20, 100, 'wood'); block(1380, 530, 20, 100, 'wood');
+      block(1350, 470, 100, 20, 'stone');
+      lemon(1350, 701, 18); lemon(1350, 563, 16); lemon(1350, 441, 18);
+  }},
+  { bottles: ['wine', 'champagne', 'beer', 'wine', 'champagne'], build() {
+      block(950, 690, 60, 60, 'glass'); lemon(950, 641, 18);
+      block(1120, 660, 20, 120, 'stone'); block(1240, 660, 20, 120, 'stone'); block(1360, 660, 20, 120, 'stone');
+      lemon(1180, 701, 18); lemon(1300, 701, 18);
+      block(1240, 590, 270, 20, 'wood');
+      block(1150, 530, 20, 100, 'glass'); block(1240, 530, 20, 100, 'glass'); block(1330, 530, 20, 100, 'glass');
+      lemon(1195, 563, 16); lemon(1285, 563, 16);
+      block(1240, 470, 220, 20, 'stone');
+      block(1190, 420, 20, 80, 'wood'); block(1290, 420, 20, 80, 'wood');
+      block(1240, 370, 140, 20, 'glass');
+      lemon(1240, 443, 16); lemon(1240, 337, 22);
+      block(1500, 700, 40, 40, 'wood'); lemon(1500, 661, 18);
+  }},
+];
+
+// ---------- state ----------
+const canvas = document.getElementById('c'), ctx = canvas.getContext('2d');
+const hud = document.getElementById('hud'), panel = document.getElementById('panel'), card = document.getElementById('card');
+let engine, world, levelIdx = 0, score = 0, levelScoreStart = 0;
+let queue = [], current = null, active = null, state = 'menu';
+let dragging = false, dragPos = null, toRemove = [], particles = [];
+let levelFrame = 0, flightT = 0, still = 0, settleT = 0, winT = 0, shake = 0;
+let scale = 1, offX = 0, offY = 0, dpr = 1;
+
+function block(x, y, w, h, mat) {
+  const m = MATS[mat];
+  const b = Bodies.rectangle(x, y, w, h, { density: m.density, friction: 0.8, restitution: 0.05 });
+  b.g = { kind: 'block', mat, w, h, hp: m.hp, max: m.hp };
+  Composite.add(world, b);
+}
+function lemon(x, y, r) {
+  const b = Bodies.circle(x, y, r, { density: 0.001, friction: 0.6, restitution: 0.2 });
+  b.g = { kind: 'lemon', r, hp: 25, max: 25 };
+  Composite.add(world, b);
+}
+
+function loadLevel(i) {
+  levelIdx = i; levelScoreStart = score;
+  engine = Engine.create({ enableSleeping: true, positionIterations: 10, velocityIterations: 8 });
+  world = engine.world;
+  const ground = Bodies.rectangle(W / 2, GROUND + 60, W * 3, 120, { isStatic: true, friction: 0.9 });
+  ground.g = { kind: 'ground' };
+  Composite.add(world, ground);
+  LEVELS[i].build();
+  Events.on(engine, 'collisionStart', onCollide);
+  queue = LEVELS[i].bottles.slice();
+  particles = []; toRemove = []; active = null;
+  levelFrame = 0; winT = 0; shake = 0;
+  nextBottle();
+  panel.classList.add('hidden');
+}
+
+function nextBottle() {
+  current = queue.shift() || null;
+  state = current ? 'aim' : 'settle';
+  dragging = false; dragPos = null;
+}
+
+// ---------- collisions & damage ----------
+function onCollide(e) {
+  if (levelFrame < 60) return; // let the towers settle first
+  for (const p of e.pairs) {
+    const a = p.bodyA, b = p.bodyB;
+    const rv = Math.hypot(a.velocity.x - b.velocity.x, a.velocity.y - b.velocity.y);
+    if (rv < 1.8) continue;
+    hit(a, b, rv); hit(b, a, rv);
+    if ((a.g?.kind === 'bottle' || b.g?.kind === 'bottle') && rv > 6) { shake = Math.min(12, rv * 0.6); clink(rv); }
+  }
+}
+function hit(target, other, rv) {
+  const g = target.g;
+  if (!g || g.dead || g.kind === 'ground') return;
+  if (g.kind === 'bottle') { if (rv > 7) g.cracked = true; return; }
+  const pw = other.g?.kind === 'bottle' ? BOTTLES[other.g.type].power : 1;
+  g.hp -= rv * rv * 0.6 * pw;
+  if (g.hp <= 0) kill(target);
+}
+function kill(body) {
+  if (body.g.dead) return;
+  body.g.dead = true; toRemove.push(body);
+}
+function destroy(body) {
+  const g = body.g, { x, y } = body.position;
+  Composite.remove(world, body);
+  if (g.kind === 'lemon') {
+    burst(x, y, ['#ffe14d', '#f7c600', '#fff7b0'], 18, 5);
+    popup(x, y, 5000); score += 5000;
+  } else if (g.kind === 'block') {
+    burst(x, y, MATS[g.mat].shard, 12, 4);
+    popup(x, y, MATS[g.mat].score); score += MATS[g.mat].score;
+  } else if (g.kind === 'bottle') {
+    const c = BOTTLES[g.type];
+    burst(x, y, [c.glass, '#ffffffaa', c.label], 22, 6);
+    clink(10);
+  }
+}
+
+// ---------- particles ----------
+function burst(x, y, colors, n, sp) {
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * Math.PI * 2, s = Math.random() * sp + 1;
+    particles.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s - 2, life: 60 + Math.random() * 30, max: 90,
+      color: colors[i % colors.length], size: 3 + Math.random() * 5, rot: Math.random() * 6, vr: (Math.random() - 0.5) * 0.4, type: 'shard' });
+  }
+}
+function popup(x, y, n) { particles.push({ x, y, vx: 0, vy: -0.8, life: 70, max: 70, text: '+' + n, type: 'text' }); }
+
+// ---------- launching ----------
+function launch(d) {
+  const t = BOTTLES[current];
+  const v = { x: d.x * POWER, y: d.y * POWER };
+  const b = Bodies.rectangle(dragPos.x, dragPos.y, 20, 60, {
+    chamfer: { radius: 7 }, density: t.density, friction: 0.5, restitution: 0.15, frictionAir: 0,
+    angle: Math.atan2(v.y, v.x) + Math.PI / 2,
+  });
+  b.g = { kind: 'bottle', type: current, popped: false, cracked: false };
+  Composite.add(world, b);
+  Body.setVelocity(b, v);
+  Body.setAngularVelocity(b, 0.02);
+  active = b; current = null; state = 'flight'; flightT = 0; still = 0;
+}
+function popCork() {
+  const b = active, v = b.velocity, s = Math.hypot(v.x, v.y) || 1;
+  Body.setVelocity(b, { x: v.x / s * Math.max(s * 1.8, 18), y: v.y / s * Math.max(s * 1.8, 18) });
+  b.g.popped = true;
+  const nx = b.position.x - Math.sin(b.angle) * -30, ny = b.position.y + Math.cos(b.angle) * -30;
+  burst(nx, ny, ['#ffffff', '#fff3c4', '#e1bd4a'], 26, 4);
+  clink(14);
+}
+
+// ---------- simulation ----------
+function step() {
+  Engine.update(engine, STEP);
+  levelFrame++;
+  for (const b of toRemove) destroy(b);
+  toRemove = [];
+  for (const b of Composite.allBodies(world)) {
+    if (b.g && b.g.kind !== 'ground' && b.position.y > H + 150 && b !== active) { b.g.dead = true; Composite.remove(world, b); }
+  }
+  for (const p of particles) { p.x += p.vx; p.y += p.vy; if (p.type === 'shard') { p.vy += 0.25; p.rot += p.vr; } p.life--; }
+  particles = particles.filter(p => p.life > 0);
+  if (shake > 0) shake *= 0.85;
+
+  if (state === 'flight') {
+    flightT++;
+    still = active.speed < 0.25 ? still + 1 : 0;
+    const { x, y } = active.position;
+    if (still > 45 || x > W + 150 || x < -150 || y > H + 200 || flightT > 600) {
+      if (world.bodies.includes(active)) destroy(active);
+      active = null; state = 'settle'; settleT = 0;
+    }
+  } else if (state === 'settle') {
+    settleT++;
+    if (settleT > 90 && (quiet() || settleT > 240)) {
+      if (lemonsLeft() > 0) { if (queue.length) nextBottle(); else lose(); }
+    }
+  }
+  if (state !== 'over' && state !== 'menu' && lemonsLeft() === 0 && ++winT > 70) win();
+}
+const lemonsLeft = () => world.bodies.filter(b => b.g?.kind === 'lemon' && !b.g.dead).length;
+const quiet = () => world.bodies.every(b => b.isStatic || b.isSleeping || b.speed < 0.15);
+
+function win() {
+  const left = queue.length + (current ? 1 : 0);
+  score += left * 10000;
+  state = 'over';
+  const last = levelIdx === LEVELS.length - 1;
+  showPanel(last ? 'Last call: you cleared the bar!' : `Level ${levelIdx + 1} cleared!`,
+    `Score ${score.toLocaleString()}${left ? ` (incl. ${left} unused bottle${left > 1 ? 's' : ''} × 10,000)` : ''}`,
+    last ? [['Play again', () => { score = 0; loadLevel(0); }]] : [['Next level', () => loadLevel(levelIdx + 1)], ['Replay', retry, 'alt']]);
+}
+function lose() {
+  state = 'over';
+  showPanel('Out of bottles', `${lemonsLeft()} sour lemon${lemonsLeft() > 1 ? 's' : ''} still standing.`, [['Try again', retry]]);
+}
+function retry() { score = levelScoreStart; loadLevel(levelIdx); }
+function showPanel(title, text, buttons) {
+  card.innerHTML = `<h1>${title}</h1><p>${text}</p>`;
+  for (const [label, fn, cls] of buttons) {
+    const btn = document.createElement('button'); btn.textContent = label; if (cls) btn.className = cls;
+    btn.onclick = fn; card.appendChild(btn);
+  }
+  panel.classList.remove('hidden');
+}
+
+// ---------- audio ----------
+let actx;
+function clink(strength) {
+  try {
+    actx = actx || new (window.AudioContext || window.webkitAudioContext)();
+    const o = actx.createOscillator(), g = actx.createGain(), t = actx.currentTime;
+    o.type = 'triangle'; o.frequency.setValueAtTime(1800 + Math.random() * 1400, t);
+    o.frequency.exponentialRampToValueAtTime(600, t + 0.15);
+    g.gain.setValueAtTime(Math.min(0.25, strength / 60), t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.2);
+    o.connect(g).connect(actx.destination); o.start(t); o.stop(t + 0.22);
+  } catch (e) {}
+}
+
+// ---------- input ----------
+function toWorld(e) {
+  const r = canvas.getBoundingClientRect();
+  return { x: (e.clientX - r.left - offX) / scale, y: (e.clientY - r.top - offY) / scale };
+}
+canvas.addEventListener('pointerdown', e => {
+  const p = toWorld(e);
+  if (state === 'aim' && Math.hypot(p.x - ANCHOR.x, p.y - ANCHOR.y) < 80) {
+    dragging = true; dragPos = clampPull(p); canvas.setPointerCapture(e.pointerId);
+  } else if (state === 'flight' && active.g.type === 'champagne' && !active.g.popped) popCork();
+});
+canvas.addEventListener('pointermove', e => { if (dragging) dragPos = clampPull(toWorld(e)); });
+canvas.addEventListener('pointerup', () => {
+  if (!dragging) return;
+  dragging = false;
+  const d = { x: ANCHOR.x - dragPos.x, y: ANCHOR.y - dragPos.y };
+  if (Math.hypot(d.x, d.y) < 15) { dragPos = null; return; }
+  launch(d);
+});
+function clampPull(p) {
+  const dx = p.x - ANCHOR.x, dy = p.y - ANCHOR.y, l = Math.hypot(dx, dy);
+  return l > MAXPULL ? { x: ANCHOR.x + dx / l * MAXPULL, y: ANCHOR.y + dy / l * MAXPULL } : p;
+}
+addEventListener('keydown', e => { if ((e.key === 'r' || e.key === 'R') && state !== 'menu') retry(); });
+
+// ---------- rendering ----------
+function resize() {
+  dpr = window.devicePixelRatio || 1;
+  canvas.width = innerWidth * dpr; canvas.height = innerHeight * dpr;
+  canvas.style.width = innerWidth + 'px'; canvas.style.height = innerHeight + 'px';
+  scale = Math.min(innerWidth / W, innerHeight / H);
+  offX = (innerWidth - W * scale) / 2; offY = (innerHeight - H * scale) / 2;
+}
+addEventListener('resize', resize);
+
+function bottlePath(t) {
+  const n = t.neck / 2, s = t.shoulder;
+  ctx.beginPath();
+  ctx.moveTo(-n, -30); ctx.lineTo(n, -30); ctx.lineTo(n, s - 8);
+  ctx.quadraticCurveTo(10, s - 4, 10, s + 4); ctx.lineTo(10, 26); ctx.quadraticCurveTo(10, 30, 6, 30);
+  ctx.lineTo(-6, 30); ctx.quadraticCurveTo(-10, 30, -10, 26); ctx.lineTo(-10, s + 4);
+  ctx.quadraticCurveTo(-10, s - 4, -n, s - 8); ctx.closePath();
+}
+function drawBottle(type, x, y, angle, opts = {}) {
+  const t = BOTTLES[type];
+  ctx.save(); ctx.translate(x, y); ctx.rotate(angle);
+  bottlePath(t);
+  ctx.fillStyle = t.glass; ctx.fill();
+  ctx.lineWidth = 1.5; ctx.strokeStyle = '#0008'; ctx.stroke();
+  ctx.save(); bottlePath(t); ctx.clip();
+  ctx.fillStyle = t.label; ctx.fillRect(-10, 4, 20, 14);
+  if (type === 'champagne') { ctx.fillStyle = '#e1bd4a'; ctx.fillRect(-10, 9, 20, 2); }
+  if (type === 'wine') { ctx.fillStyle = '#8e1c2c'; ctx.fillRect(-5, 8, 10, 6); }
+  if (type === 'beer') { ctx.fillStyle = '#b8323f'; ctx.beginPath(); ctx.arc(0, 11, 4, 0, 7); ctx.fill(); }
+  ctx.fillStyle = '#ffffff40'; ctx.fillRect(-7, -14, 3, 40);
+  if (!(type === 'champagne' && opts.popped)) {
+    ctx.fillStyle = t.cap;
+    ctx.fillRect(-10, -31, 20, type === 'beer' ? 4 : type === 'wine' ? 10 : 15);
+  }
+  if (opts.cracked) {
+    ctx.strokeStyle = '#ffffffb0'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(-8, -2); ctx.lineTo(-1, 6); ctx.lineTo(-4, 14); ctx.lineTo(4, 22); ctx.moveTo(-1, 6); ctx.lineTo(7, 4); ctx.stroke();
+  }
+  ctx.restore(); ctx.restore();
+}
+function drawBlock(b) {
+  const g = b.g, m = MATS[g.mat], w = g.w, h = g.h;
+  ctx.save(); ctx.translate(b.position.x, b.position.y); ctx.rotate(b.angle);
+  ctx.fillStyle = m.fill; ctx.fillRect(-w / 2, -h / 2, w, h);
+  ctx.lineWidth = 2; ctx.strokeStyle = m.edge; ctx.strokeRect(-w / 2, -h / 2, w, h);
+  ctx.lineWidth = 1;
+  if (g.mat === 'wood') {
+    ctx.strokeStyle = '#7a4a1c66'; ctx.beginPath();
+    if (w > h) for (let yy = -h / 2 + 6; yy < h / 2; yy += 6) { ctx.moveTo(-w / 2 + 3, yy); ctx.lineTo(w / 2 - 3, yy); }
+    else for (let xx = -w / 2 + 6; xx < w / 2; xx += 6) { ctx.moveTo(xx, -h / 2 + 3); ctx.lineTo(xx, h / 2 - 3); }
+    ctx.stroke();
+  } else if (g.mat === 'glass') {
+    ctx.strokeStyle = '#ffffffaa'; ctx.beginPath(); ctx.moveTo(-w / 2 + 4, -h / 2 + 4); ctx.lineTo(-w / 2 + 4, h / 2 - 4); ctx.stroke();
+  } else {
+    ctx.fillStyle = '#00000022';
+    for (let i = 0; i < 6; i++) ctx.fillRect(((i * 37) % w) - w / 2, ((i * 53) % h) - h / 2, 3, 3);
+  }
+  if (g.hp < g.max * 0.5) {
+    ctx.strokeStyle = '#000a'; ctx.lineWidth = 1.5; ctx.beginPath();
+    ctx.moveTo(-w / 4, -h / 2); ctx.lineTo(0, -h / 8); ctx.lineTo(-w / 8, h / 6); ctx.lineTo(w / 5, h / 2); ctx.stroke();
+  }
+  ctx.restore();
+}
+function drawLemon(b) {
+  const r = b.g.r;
+  ctx.save(); ctx.translate(b.position.x, b.position.y); ctx.rotate(b.angle);
+  ctx.fillStyle = '#f7d21e';
+  ctx.beginPath(); ctx.ellipse(0, 0, r * 1.15, r, 0, 0, 7); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(r * 1.12, 0, 4, 3, 0, 0, 7); ctx.ellipse(-r * 1.12, 0, 4, 3, 0, 0, 7); ctx.fill();
+  ctx.strokeStyle = '#b89400'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.ellipse(0, 0, r * 1.15, r, 0, 0, 7); ctx.stroke();
+  ctx.fillStyle = '#9fc93c'; ctx.beginPath(); ctx.ellipse(-2, -r + 1, 6, 3, -0.4, 0, 7); ctx.fill();
+  if (b.g.hp < b.g.max) { ctx.fillStyle = '#a87a0066'; ctx.beginPath(); ctx.arc(r * 0.4, r * 0.3, r * 0.25, 0, 7); ctx.fill(); }
+  // angry face
+  ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(-r * 0.35, -r * 0.1, r * 0.22, 0, 7); ctx.arc(r * 0.35, -r * 0.1, r * 0.22, 0, 7); ctx.fill();
+  ctx.fillStyle = '#222'; ctx.beginPath(); ctx.arc(-r * 0.3, -r * 0.05, r * 0.1, 0, 7); ctx.arc(r * 0.3, -r * 0.05, r * 0.1, 0, 7); ctx.fill();
+  ctx.strokeStyle = '#3a2a00'; ctx.lineWidth = 2.5; ctx.beginPath();
+  ctx.moveTo(-r * 0.6, -r * 0.5); ctx.lineTo(-r * 0.12, -r * 0.3); ctx.moveTo(r * 0.6, -r * 0.5); ctx.lineTo(r * 0.12, -r * 0.3);
+  ctx.moveTo(-r * 0.3, r * 0.5); ctx.quadraticCurveTo(0, r * 0.25, r * 0.3, r * 0.5); ctx.stroke();
+  ctx.restore();
+}
+function drawScene() {
+  // sky
+  const sky = ctx.createLinearGradient(0, 0, 0, GROUND);
+  sky.addColorStop(0, '#2b1640'); sky.addColorStop(0.55, '#8a3b5c'); sky.addColorStop(1, '#f29a5a');
+  ctx.fillStyle = sky; ctx.fillRect(-50, -50, W + 100, GROUND + 50);
+  ctx.fillStyle = '#ffd27a'; ctx.beginPath(); ctx.arc(1250, 520, 70, 0, 7); ctx.fill();
+  ctx.fillStyle = '#5a2a4a';
+  ctx.beginPath(); ctx.moveTo(-50, GROUND);
+  for (let x = -50; x <= W + 50; x += 100) ctx.lineTo(x, GROUND - 70 - 40 * Math.sin(x / 170));
+  ctx.lineTo(W + 50, GROUND); ctx.fill();
+  // ground
+  ctx.fillStyle = '#5b8a3a'; ctx.fillRect(-50, GROUND, W + 100, 14);
+  ctx.fillStyle = '#6b4a2b'; ctx.fillRect(-50, GROUND + 14, W + 100, H - GROUND + 50);
+}
+function drawSlingBack() {
+  ctx.strokeStyle = '#5a3415'; ctx.lineWidth = 12; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(ANCHOR.x, GROUND); ctx.lineTo(ANCHOR.x, ANCHOR.y + 50);
+  ctx.lineTo(ANCHOR.x + 16, ANCHOR.y - 5); ctx.stroke();
+}
+function drawSlingFront() {
+  ctx.strokeStyle = '#5a3415'; ctx.lineWidth = 12; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(ANCHOR.x, ANCHOR.y + 50); ctx.lineTo(ANCHOR.x - 16, ANCHOR.y - 5); ctx.stroke();
+}
+function drawBand(from, to) {
+  ctx.strokeStyle = '#2a1608'; ctx.lineWidth = 5; ctx.beginPath(); ctx.moveTo(from.x, from.y); ctx.lineTo(to.x, to.y); ctx.stroke();
+}
+function render() {
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = '#1a1020'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+  const sx = shake > 0.5 ? (Math.random() - 0.5) * shake : 0, sy = shake > 0.5 ? (Math.random() - 0.5) * shake : 0;
+  ctx.setTransform(scale * dpr, 0, 0, scale * dpr, (offX + sx) * dpr, (offY + sy) * dpr);
+  drawScene();
+  if (!world) return;
+
+  // waiting bottles lined up behind the slingshot
+  queue.forEach((t, i) => drawBottle(t, 150 - i * 28, GROUND - 30, 0));
+
+  drawSlingBack();
+  const pos = dragPos || ANCHOR;
+  if (current) {
+    drawBand({ x: ANCHOR.x + 16, y: ANCHOR.y - 5 }, pos);
+    const ang = dragPos ? Math.atan2(ANCHOR.y - pos.y, ANCHOR.x - pos.x) + Math.PI / 2 : 0;
+    drawBottle(current, pos.x, pos.y, ang);
+  } else drawBand({ x: ANCHOR.x + 16, y: ANCHOR.y - 5 }, { x: ANCHOR.x - 16, y: ANCHOR.y - 5 });
+
+  for (const b of world.bodies) {
+    if (!b.g) continue;
+    if (b.g.kind === 'block') drawBlock(b);
+    else if (b.g.kind === 'lemon') drawLemon(b);
+    else if (b.g.kind === 'bottle') drawBottle(b.g.type, b.position.x, b.position.y, b.angle, b.g);
+  }
+
+  if (current) drawBand({ x: ANCHOR.x - 16, y: ANCHOR.y - 5 }, pos);
+  drawSlingFront();
+
+  // aiming arc
+  if (dragging && dragPos) {
+    let x = dragPos.x, y = dragPos.y, vx = (ANCHOR.x - x) * POWER, vy = (ANCHOR.y - y) * POWER;
+    ctx.fillStyle = '#ffffffcc';
+    for (let i = 0; i < 46; i++) {
+      vy += G; x += vx; y += vy;
+      if (i % 3 === 0) { ctx.beginPath(); ctx.arc(x, y, 3.5 - i / 18, 0, 7); ctx.fill(); }
+    }
+  }
+
+  for (const p of particles) {
+    ctx.globalAlpha = Math.max(0, p.life / p.max);
+    if (p.type === 'text') {
+      ctx.fillStyle = '#fff'; ctx.font = 'bold 22px system-ui'; ctx.textAlign = 'center';
+      ctx.strokeStyle = '#0008'; ctx.lineWidth = 4; ctx.strokeText(p.text, p.x, p.y); ctx.fillText(p.text, p.x, p.y);
+    } else {
+      ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.rot); ctx.fillStyle = p.color;
+      ctx.beginPath(); ctx.moveTo(-p.size, 0); ctx.lineTo(0, -p.size * 0.6); ctx.lineTo(p.size * 0.8, p.size * 0.5); ctx.fill();
+      ctx.restore();
+    }
+  }
+  ctx.globalAlpha = 1;
+
+  if (state === 'flight' && active?.g.type === 'champagne' && !active.g.popped) {
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 20px system-ui'; ctx.textAlign = 'center';
+    ctx.fillText('Tap to pop the cork!', W / 2, 80);
+  }
+  const next = current ? current[0].toUpperCase() + current.slice(1) : '';
+  hud.textContent = `Level ${levelIdx + 1}/${LEVELS.length}   ·   Score ${score.toLocaleString()}   ·   Lemons ${lemonsLeft()}${next ? '   ·   Loaded: ' + next : ''}`;
+}
+
+// ---------- loop ----------
+let acc = 0, last = performance.now();
+function frame(t) {
+  acc += Math.min(100, t - last); last = t;
+  while (acc >= STEP) { if (world && state !== 'menu') step(); acc -= STEP; }
+  render();
+  requestAnimationFrame(frame);
+}
+resize();
+loadLevel(0);
+state = 'menu';
+showPanel('Bottle Smash', 'The sour lemons have taken over the bar. Fling beer, wine and champagne bottles to knock them out.<br><br><b>Beer</b>: the all-rounder. <b>Wine</b>: heavy, smashes stone. <b>Champagne</b>: tap mid-flight to pop the cork for a burst of speed.',
+  [['Play', () => { panel.classList.add('hidden'); state = 'aim'; levelFrame = 0; }]]);
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
