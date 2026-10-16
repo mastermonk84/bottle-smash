@@ -2,8 +2,15 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no, viewport-fit=cover">
 <title>Bottle Smash</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Bottle Smash">
+<meta name="theme-color" content="#2b1640">
 <style>
   html, body { margin: 0; height: 100%; background: #1a1020; overflow: hidden; font-family: -apple-system, system-ui, sans-serif; }
   canvas { display: block; touch-action: none; }
@@ -28,10 +35,10 @@
 <div id="rotate">📱↻<br>Turn your phone sideways</div>
 <div id="panel"><div class="card" id="card"></div></div>
 
-<script src="https://cdn.jsdelivr.net/npm/matter-js@0.19.0/build/matter.min.js"></script>
+<script src="matter.min.js"></script>
 <script>
 if (!window.Matter) {
-  document.getElementById('card').innerHTML = '<h1>Offline?</h1><p>Could not load the physics engine (matter.js) from the CDN. Connect to the internet and reload.</p>';
+  document.getElementById('card').innerHTML = '<h1>Loading failed</h1><p>Could not load the physics engine (matter.js). Reload the page.</p>';
   throw new Error('matter.js missing');
 }
 const { Engine, Bodies, Body, Events, Composite } = Matter;
@@ -472,6 +479,7 @@ state = 'menu';
 showPanel('Bottle Smash', 'The sour lemons have taken over the bar. Fling beer, wine and champagne bottles to knock them out.<br><br><b>Beer</b>: the all-rounder. <b>Wine</b>: heavy, smashes stone. <b>Champagne</b>: tap mid-flight to pop the cork for a burst of speed.',
   [['Play', () => { panel.classList.add('hidden'); state = 'aim'; levelFrame = 0; }]]);
 requestAnimationFrame(frame);
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js');
 </script>
 </body>
 </html>
